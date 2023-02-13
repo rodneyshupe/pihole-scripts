@@ -1,60 +1,100 @@
-#!/usr/bin/env sh
+#!/bin/bash
 
-function export() {
-    MODE=${1:-dhcp}
-    INPUT=${2:-openwrt_dhcp}
+# Function to process each host configuration block
+function process_config_block() {
+    local config_block="$1"
+    local block_type="${2:-host}"
 
-    IN_HOST=0; IN_DOMAIN=0
-    MAC=""; IP=""; NAME=""
+    local name=""
+    local mac=""
+    local ip=""
+    local dns=""
 
-    while read -r FILE_LINE; do
-        read -a parts <<< "$FILE_LINE"
-        if [[ "${parts[0]}" == "config" ]]; then
-            if [ $IN_HOST -eq 1 ]; then
-                if [ ! -z $MAC ] && [ ! -z $IP ] && [ ! -z $NAME ]; then
-                    if [[ "$MODE" == "dhcp" ]]; then
-                        echo "dhcp-host=$MAC,$IP,$NAME" | sed -e "s/'//g" | sed -e 's/"//g'
-                    elif [[ "$MODE" == "all" ]]; then
-                        echo "$IP $NAME" | sed -e "s/'//g" | sed -e 's/"//g'
-                    fi
-                fi
-            elif [ $IN_DOMAIN -eq 1 ]; then
-                if [ ! -z $IP ] && [ ! -z $NAME ]; then 
-                    if [[ "$MODE" == "hosts" ]] || [[ "$MODE" == "all" ]]; then
-                        echo "$IP $NAME" | sed -e "s/'//g" | sed -e 's/"//g'
-                    fi
-                fi
-            fi
-            if [[ "${parts[1]}" == "host" ]]; then
-                IN_HOST=1
-                IN_DOMAIN=0
-            elif [[ "${parts[1]}" == "domain" ]]; then
-                IN_HOST=0
-                IN_DOMAIN=1
-            else
-                IN_HOST=0
-                IN_DOMAIN=0
-            fi
-            MAC=""; IP=""; NAME=""
-        elif [[ "${parts[0]}" == "option" ]]; then
-            case "${parts[1]}" in
-                "mac")
-                    MAC="${parts[2]}"
-                    ;;
-                "ip")
-                    IP="${parts[2]}"
-                    ;;
-                "name")
-                    NAME="${parts[2]}"
-                    ;;
+    local line=""
+    while read line; do
+        if [[ "$line" == "option "* ]]; then
+            key=$(echo $line | awk '{split($0,a," "); print a[2]}')
+            value=$(echo $line | awk '{split($0,a," "); print a[3]}' | sed -e "s/'//g" -e 's/"//g')
+
+            case "$key" in
+                "name" ) name="$value" ;;
+                "mac"  ) mac="$value" ;;
+                "ip"   ) ip="$value" ;;
+                "dns"  ) dns="$value" ;;
             esac
-        #else
-            #echo "DEBUG: ----"
-            #for element in "${parts[@]}"; do
-            #    echo "DEBUG: $element"
-            #done
-            #echo "DEBUG: ----"
+            value=""
         fi
-    done < "$INPUT"
+    done <<< "$config_block"
 
+    if [ "$blocktype" == "host" ]; then
+        if [ -z "$dns" ] || [ -z "$mac" ] || ([ -z "$name" ] && [ -z "$ip" ]); then
+            [ -z "$mac" ] && mac="<unknown>"
+            [ -z "$ip" ] && ip="<unknown>"
+            [ -z "$name" ] && name="<unknown>"
+            echo "# dhcp-host=${mac^^},$ip,$name"
+        else
+            echo "$(echo "dhcp-host=${mac^^},$ip,$name" | sed -e 's/,,/,/g')"
+        fi
+    elif [ "$blocktype" == "domain" ]; then
+        if [ ! -z "$name" ] && [ ! -z "$ip" ]; then
+            #echo "$ip $name"
+        fi
+    fi
 }
+
+function remove_duplicate_hostnames() {
+  local file="$1"
+
+  # Create a new file without duplicates
+  awk -F, '{if (!seen[$NF]++) {print} else {print "#"$0}}' "$file" > "$file.new"
+
+  # Replace the original file with the new one
+  mv "$file.new" "$file"
+}
+
+function process_openwrt_file() {
+    local dhcp_config_file="$1"
+    # Read the input file line by line
+    local config_block=""
+    local adding_to_block=0
+    local line=""
+    local block_type=""
+    while read line; do
+        if [[ "$line" == "config "* ]]; then
+            if [ ! -z "$config_block" ]; then
+                process_config_block "$(echo -e "$config_block")" "$block_type"
+                config_block=""
+                block_type=""
+            fi
+            if [[ "$line" == "config host" ]]; then
+                adding_to_block=1
+                block_type="host"
+            else [[ "$line" == "config domain" ]]; then
+                adding_to_block=1
+                block_type="domain"
+            else
+                adding_to_block=0
+                block_type=""
+            fi
+        fi
+        if [ $adding_to_block -eq 1 ] && [ ! -z "$line" ]; then
+            config_block="$config_block\n$line"
+        fi
+    done < "$dhcp_config_file"
+
+    # Process the last host configuration block if there is one
+    if [ ! -z "$config_block" ]; then
+        process_config_block "$(echo -e "$config_block")" "$block_type"
+    fi
+}
+
+# Open the input file
+openwrt_dhcp_config_file="openwrt_dhcp.conf"
+if [ ! -f "$openwrt_dhcp_config_file" ]; then
+    echo "Error: input file $openwrt_dhcp_config_file does not exist."
+    exit 1
+else
+    process_openwrt_file "$openwrt_dhcp_config_file" > pihole-static-dhcp.conf
+    remove_duplicate_hostnames pihole-static-dhcp.conf
+fi
+

@@ -1,0 +1,29 @@
+version: '3.5'
+
+services:
+  cadvisor:
+    image: zcube/cadvisor
+    container_name: cadvisor
+    # Note: If stats ar mission check `docker info` for warnings. See: https://dalwar23.com/how-to-fix-no-memory-limit-support-for-docker-in-raspberry-pi/?doing_wp_cron=1676060573.5476570129394531250000
+    #       For example: to get memory usage working on a RPi make sure the /boot/cmdline.txt contains
+    #       the following (see: https://github.com/docker/for-linux/issues/1112):
+    #           cgroup_enable=cpuset cgroup_enable=memory cgroup_memory=1
+    ports:
+      - 9180:8080
+    command:
+      - --housekeeping_interval=30s
+      - --docker_only=true
+      #- --disable_metrics=cpu_topology
+      #- --disable_metrics=percpu,sched,tcp,udp,disk,diskIO,accelerator,hugetlb,referenced_memory,cpu_topology,resctrl
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:rw
+      - /sys:/sys:ro
+      - /var/lib/docker:/var/lib/docker:ro
+      #- /sys/fs/cgroup:/cgroup:ro
+      - /etc/machine-id:/etc/machine-id:ro
+      - /var/lib/dbus/machine-id:/var/lib/dbus/machine-id:ro
+      - /etc/localtime:/etc/localtime:ro
+    devices:
+      - /dev/kmsg:/dev/kmsg
+    restart: unless-stopped
